@@ -1,0 +1,77 @@
+name: Build Offline APK (arm64-v8a)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android/sdk/ndk/2[0-8]* || true
+          df -h
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: sdkmanager "ndk;29.0.14206865"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build offline APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleOffline --no-daemon --stacktrace
+
+      - name: Locate APK
+        id: apk
+        run: |
+          APK=$(find app/build/outputs/apk -iname '*.apk' | grep -i offline | head -n1)
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          echo "Found: $APK"
+
+      - name: Sign (only if unsigned and secrets are set)
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          APK="${{ steps.apk.outputs.path }}"
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n1)
+          if "$BT/apksigner" verify "$APK" >/dev/null 2>&1; then
+            echo "APK already signed."
+          elif [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > ks.jks
+            "$BT/zipalign" -f -p 4 "$APK" aligned.apk
+            "$BT/apksigner" sign --ks ks.jks --ks-pass pass:"$KS_PASS" \
+              --ks-key-alias "$KEY_ALIAS" --out signed.apk aligned.apk
+            mv signed.apk "$APK"
+          else
+            echo "::warning::APK is unsigned and no keystore secrets are set."
+          fi
+
+      - name: Verify no INTERNET permission and arm64-only
+        run: |
+          APK="${{ steps.apk.outputs.path }}"
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n1)
+          "$BT/aapt2" dump permissions "$APK" | tee perms.txt
+          if grep -q "android.permission.INTERNET" perms.txt; then
+            echo "::error::INTERNET permission is still present"; exit 1
+          fi
+          unzip -l "$APK" | awk '{print $4}' | grep '^lib/' | cut -d/ -f2 | sort -u
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cyime-offline-arm64-v8a
+          path: ${{ steps.apk.outputs.path }}
