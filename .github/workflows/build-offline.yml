@@ -37,34 +37,43 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleOffline --no-daemon --stacktrace
 
-      - name: Locate APK
+      - name: Locate arm64-v8a APK
         id: apk
         run: |
-          APK=$(find app/build/outputs/apk -iname '*.apk' | grep -i offline | head -n1)
+          echo "All APKs produced:"
+          find app/build/outputs/apk -iname '*.apk'
+          APK=$(find app/build/outputs/apk -iname '*.apk' | grep -i offline | grep -i arm64 | head -n1)
+          if [ -z "$APK" ]; then
+            echo "::error::No arm64 offline APK found, see the list above"; exit 1
+          fi
           echo "path=$APK" >> "$GITHUB_OUTPUT"
-          echo "Found: $APK"
+          echo "Using: $APK"
 
-      - name: Sign (only if unsigned and secrets are set)
-        env:
-          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
-          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      - name: Restore signing key (kept in the Actions cache between runs)
+        uses: actions/cache@v4
+        with:
+          path: ks.jks
+          key: signing-keystore-v1
+
+      - name: Sign APK
         run: |
           APK="${{ steps.apk.outputs.path }}"
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n1)
           if "$BT/apksigner" verify "$APK" >/dev/null 2>&1; then
             echo "APK already signed."
-          elif [ -n "$KS_B64" ]; then
-            echo "$KS_B64" | base64 -d > ks.jks
-            "$BT/zipalign" -f -p 4 "$APK" aligned.apk
-            "$BT/apksigner" sign --ks ks.jks --ks-pass pass:"$KS_PASS" \
-              --ks-key-alias "$KEY_ALIAS" --out signed.apk aligned.apk
-            mv signed.apk "$APK"
           else
-            echo "::warning::APK is unsigned and no keystore secrets are set."
+            if [ ! -f ks.jks ]; then
+              keytool -genkeypair -keystore ks.jks -storepass cyime-local -keypass cyime-local \
+                -alias cyime -keyalg RSA -keysize 2048 -validity 36500 -dname "CN=CyIME"
+            fi
+            "$BT/zipalign" -f -p 4 "$APK" aligned.apk
+            "$BT/apksigner" sign --ks ks.jks --ks-pass pass:cyime-local \
+              --key-pass pass:cyime-local --ks-key-alias cyime --out signed.apk aligned.apk
+            mv signed.apk "$APK"
+            "$BT/apksigner" verify "$APK"
           fi
 
-      - name: Verify no INTERNET permission and arm64-only
+      - name: Verify no INTERNET permission
         run: |
           APK="${{ steps.apk.outputs.path }}"
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n1)
@@ -72,6 +81,7 @@ jobs:
           if grep -q "android.permission.INTERNET" perms.txt; then
             echo "::error::INTERNET permission is still present"; exit 1
           fi
+          echo "ABI folders in this APK:"
           unzip -l "$APK" | awk '{print $4}' | grep '^lib/' | cut -d/ -f2 | sort -u
 
       - uses: actions/upload-artifact@v4
