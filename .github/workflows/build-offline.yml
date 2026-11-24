@@ -25,7 +25,11 @@ jobs:
       - uses: android-actions/setup-android@v3
 
       - name: Install NDK
-        run: sdkmanager "ndk;29.0.14206865"
+        run: |
+          set +o pipefail
+          yes | sdkmanager --licenses > /dev/null
+          set -o pipefail
+          sdkmanager --install "ndk;29.0.14206865"
 
       - uses: gradle/actions/setup-gradle@v4
 
