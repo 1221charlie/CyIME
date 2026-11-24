@@ -22,14 +22,13 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
-
-      - name: Install NDK
+      - name: Install NDK (use the runner's preinstalled Android SDK)
         run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           set +o pipefail
-          yes | sdkmanager --licenses > /dev/null
+          yes | "$SDKM" --licenses > /dev/null || true
           set -o pipefail
-          sdkmanager --install "ndk;29.0.14206865"
+          "$SDKM" --install "ndk;29.0.14206865"
 
       - uses: gradle/actions/setup-gradle@v4
 
